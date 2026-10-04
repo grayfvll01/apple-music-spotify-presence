@@ -2,6 +2,14 @@
 
 Versions follow [Semantic Versioning](https://semver.org). Each version's section here becomes its release notes.
 
+## 1.2.0 - 2026-10-04
+
+- New name: **Apple Music & Spotify Presence**. Settings, "Start with Windows" and the shortcuts carry over.
+- Smoother song changes: the status switches straight to the next song, usually with its album art at once, instead of disappearing and coming back.
+- Spotify podcast episodes (including songs uploaded as episodes) now show, with the show's name where the artist goes.
+- Fixed: after skipping a song in Spotify, the status could vanish for several seconds while Spotify wrongly reported "paused".
+- Pausing clears the status after a moment rather than instantly, so a short blip between songs never blanks it.
+
 ## 1.1.0 - 2026-09-29
 
 - Spotify support, with the same options as Apple Music. Friends who click the song, artist or album open it on Spotify.
