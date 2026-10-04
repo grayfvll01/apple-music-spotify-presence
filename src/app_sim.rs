@@ -14,6 +14,8 @@ thread_local! {
     static PLAYER: RefCell<Option<(Track, i64)>> = const { RefCell::new(None) };
     static LOOKUP_MS: Cell<i64> = const { Cell::new(0) };
     static LOOKUP_FAIL: Cell<bool> = const { Cell::new(false) };
+    /// When a lookup in progress finishes and wakes the worker (0 = none).
+    static WAKE_AT: Cell<i64> = const { Cell::new(0) };
     static DC: RefCell<Dc> = RefCell::new(Dc::default());
     static CFG: RefCell<(u64, Config)> = RefCell::new((1, Config::default()));
 }
@@ -24,6 +26,20 @@ fn clock() -> i64 {
 
 fn advance(ms: i64) {
     CLOCK.with(|c| c.set(c.get() + ms));
+}
+
+/// Sleeps like the worker does: `ms`, or less if a lookup finishes first.
+fn sleep(ms: i64) {
+    let wake = WAKE_AT.with(|w| w.replace(0));
+    let now = clock();
+    if wake > now && wake < now + ms {
+        advance(wake - now);
+    } else {
+        advance(ms);
+        if wake > now + ms {
+            WAKE_AT.with(|w| w.set(wake));
+        }
+    }
 }
 
 pub mod sys {
@@ -119,25 +135,26 @@ pub mod discord {
     }
 }
 
-/// Like itunes::Lookup, but the "network" just takes LOOKUP_MS.
-pub struct Lookup(Vec<(String, Option<Meta>, i64)>);
+/// Like itunes::Art: a lookup finishes LOOKUP_MS after it's asked for, and
+/// then wakes the worker (see `run`).
+pub struct Art(Vec<(String, i64, Option<Meta>)>);
 
-impl Lookup {
+impl Art {
     pub fn new() -> Self {
-        Lookup(Vec::new())
+        Art(Vec::new())
     }
-    fn hit(&self, t: &Track) -> Option<Option<Meta>> {
-        let (_, m, until) = self.0.iter().find(|(k, ..)| *k == t.title)?;
-        (m.is_some() || clock() < *until).then(|| m.clone())
-    }
-    pub fn cached(&self, t: &Track, _: &str, _: u32) -> bool {
-        self.hit(t).is_some()
-    }
-    pub fn find(&mut self, t: &Track, _: &str, _: u32) -> Option<Meta> {
-        if let Some(m) = self.hit(t) {
-            return m;
+    pub fn get(&mut self, t: &Track, _: &str, _: u32) -> Option<Option<Meta>> {
+        let now = clock();
+        if let Some((_, done, m)) = self.0.iter().find(|(k, ..)| *k == t.title) {
+            // A failure is asked again after 30 s, like the real one.
+            if *done > now {
+                return None;
+            }
+            if m.is_some() || now < *done + 30_000 {
+                return Some(m.clone());
+            }
         }
-        advance(LOOKUP_MS.with(|c| c.get()));
+        let done = now + LOOKUP_MS.with(|c| c.get());
         let meta = (!LOOKUP_FAIL.with(|c| c.get())).then(|| Meta {
             artwork: "https://is1-ssl.mzstatic.com/a/512x512bb.jpg".into(),
             track_url: "https://music.apple.com/song/1".into(),
@@ -145,10 +162,10 @@ impl Lookup {
             album_url: "https://music.apple.com/album/3".into(),
             track_id: 1,
         });
-        let retry = if meta.is_some() { 600_000 } else { 30_000 };
         self.0.retain(|(k, ..)| *k != t.title);
-        self.0.push((t.title.clone(), meta.clone(), clock() + retry));
-        meta
+        self.0.push((t.title.clone(), done, meta));
+        WAKE_AT.with(|w| w.set(done));
+        None
     }
 }
 
@@ -156,6 +173,7 @@ impl Lookup {
 pub struct Smtc;
 
 impl Smtc {
+    pub fn forget(&mut self) {}
     pub fn poll(&mut self, players: &[Player]) -> windows::core::Result<Option<Track>> {
         Ok(PLAYER.with(|p| {
             p.borrow().as_ref().filter(|(t, _)| players.contains(&t.player)).map(|(t, since)| {
@@ -187,6 +205,7 @@ fn track(title: &str) -> Track {
         title: title.into(),
         artist: "Artist".into(),
         album: "Album".into(),
+        episode: false,
         state: State::Playing,
         duration_ms: 240_000,
         position_ms: 0,
@@ -281,7 +300,7 @@ fn run(w: &mut Worker, h: &History, ms: i64) {
         } else {
             spins = 0;
         }
-        advance(sleep);
+        self::sleep(sleep);
     }
 }
 
@@ -292,7 +311,7 @@ fn run_never_blank(w: &mut Worker, h: &History, ms: i64) {
         let sleep = w.tick() as i64;
         h.check();
         assert!(showing().is_some(), "the status blinked off between songs");
-        advance(sleep);
+        self::sleep(sleep);
     }
 }
 
@@ -301,6 +320,7 @@ fn reset(running: bool, lookup_ms: i64) -> (Worker, History) {
     PLAYER.with(|p| *p.borrow_mut() = None);
     LOOKUP_MS.with(|c| c.set(lookup_ms));
     LOOKUP_FAIL.with(|c| c.set(false));
+    WAKE_AT.with(|w| w.set(0));
     CFG.with(|c| *c.borrow_mut() = (1, Config::default()));
     SHARED.enabled.store(true, SeqCst);
     (Worker::new(), History { current: None, ended: Vec::new() })
@@ -316,13 +336,13 @@ fn worker_scenarios() {
     run(&mut w, &h, 3000);
     assert_eq!(showing().as_deref(), Some("A"));
     h.pause();
-    run(&mut w, &h, 1500);
+    run(&mut w, &h, 3500);
     assert_eq!(showing(), None, "cleared on pause");
     h.play("A");
     run(&mut w, &h, 3000);
     assert_eq!(showing().as_deref(), Some("A"));
     h.stop();
-    run(&mut w, &h, 1500);
+    run(&mut w, &h, 3500);
     assert_eq!(showing(), None, "cleared when Apple Music closes");
 
     // Skipping fast while each lookup takes almost a second (the old song
@@ -402,7 +422,7 @@ fn worker_scenarios() {
 
     // A new song replaces the old one directly: the status never blinks off
     // in between, even while its (slow) album-art lookup runs.
-    let (mut w, mut h) = reset(true, 850);
+    let (mut w, mut h) = reset(true, 2500);
     h.play("First");
     run(&mut w, &h, 4000);
     assert_eq!(showing().as_deref(), Some("First"));
@@ -442,6 +462,59 @@ fn worker_scenarios() {
     edit_config(|c| c.spotify = false);
     run(&mut w, &h, 1100);
     assert_eq!(SHARED.status.with(|s| s.playing.clone()), "Apple Music and Spotify are both turned off");
+
+    // A blip between two songs (the player says "paused" or vanishes for a
+    // moment) doesn't take the status down and put it back.
+    for blip in [State::Paused, State::Changing] {
+        let (mut w, mut h) = reset(true, 300);
+        h.play("A");
+        run(&mut w, &h, 4000);
+        PLAYER.with(|p| p.borrow_mut().as_mut().unwrap().0.state = blip);
+        run_never_blank(&mut w, &h, 900);
+        h.play("B");
+        run_never_blank(&mut w, &h, 4000);
+        assert_eq!(showing().as_deref(), Some("B"));
+    }
+    let (mut w, mut h) = reset(true, 300);
+    h.play("A");
+    run(&mut w, &h, 4000);
+    PLAYER.with(|p| *p.borrow_mut() = None);
+    run_never_blank(&mut w, &h, 900);
+    h.play("B");
+    run_never_blank(&mut w, &h, 4000);
+    assert_eq!(showing().as_deref(), Some("B"), "player gone for a moment");
+
+    // A quick album-art lookup: each new song goes up in one update, with
+    // its art. A slow one: the song first, the art after, never blank.
+    for (lookup_ms, updates) in [(0, 1), (300, 1), (1400, 1), (2500, 2)] {
+        let (mut w, mut h) = reset(true, lookup_ms);
+        h.play("A");
+        run(&mut w, &h, 8000);
+        let before = DC.with(|d| d.borrow().updates);
+        h.play("B");
+        run_never_blank(&mut w, &h, 8000);
+        assert_eq!(showing().as_deref(), Some("B"));
+        assert_eq!(DC.with(|d| d.borrow().updates) - before, updates, "lookup {lookup_ms} ms");
+    }
+
+    // A long loading phase, then a new song whose art is slow: waiting for
+    // the art doesn't stretch the hold, the old song still goes by HOLD_MS.
+    let (mut w, mut h) = reset(true, 2500);
+    h.play("A");
+    run(&mut w, &h, 4000);
+    h.changing();
+    run(&mut w, &h, 3500);
+    h.play("B"); // settles while A's hold still has time left
+    let end = clock() + 4000;
+    while clock() < end {
+        let ms = w.tick() as i64;
+        // A hold ends at the first poll (every SETTLE_MS) after HOLD_MS.
+        if showing().as_deref() == Some("A") {
+            assert!(clock() - w.last_definite <= HOLD_MS + SETTLE_MS, "A outlived its hold");
+        }
+        sleep(ms);
+    }
+    assert_eq!(showing().as_deref(), Some("B"));
 
     SHARED.enabled.store(true, SeqCst);
 }

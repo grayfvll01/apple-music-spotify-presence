@@ -1,4 +1,4 @@
-//! `%APPDATA%\AppleMusicDiscordPresence\config.ini`: flat `key = value` lines, `#`/`;` comments.
+//! `%APPDATA%\AppleMusicSpotifyPresence\config.ini`: flat `key = value` lines, `#`/`;` comments.
 //! Missing keys fall back to defaults; the file is re-read whenever it changes.
 
 use crate::prelude::*;
@@ -176,7 +176,7 @@ fn appdata() -> String {
 }
 
 pub fn dir() -> String {
-    appdata() + "\\AppleMusicDiscordPresence"
+    appdata() + "\\AppleMusicSpotifyPresence"
 }
 
 pub fn path() -> String {
@@ -190,10 +190,16 @@ pub fn ensure_file() -> bool {
     if sys::stat(&p).is_some() {
         return false;
     }
-    sys::create_dir(&dir());
-    // Settings from before the app was renamed (0.1.x) carry over.
-    if sys::rename(&(appdata() + "\\ap-music-drp\\config.ini"), &p) {
+    // Settings from before the app was renamed carry over: the whole folder
+    // from 1.1.x and older (log included), or just the file.
+    if sys::rename(&(appdata() + "\\AppleMusicDiscordPresence"), &dir()) && sys::stat(&p).is_some() {
         return false;
+    }
+    sys::create_dir(&dir());
+    for old in ["\\AppleMusicDiscordPresence\\config.ini", "\\ap-music-drp\\config.ini"] {
+        if sys::rename(&(appdata() + old), &p) {
+            return false;
+        }
     }
     // CRLF so old Notepad shows it right, whatever the checkout's line endings.
     sys::create_file(&p, DEFAULT_FILE.replace("\r\n", "\n").replace('\n', "\r\n").as_bytes())
@@ -213,9 +219,15 @@ pub fn set(key: &str, value: &str) -> bool {
 const OLD_CLIENT_ID: &str = "773825528921849856";
 
 /// Moves settings files written by older versions to the current defaults
-/// where they only held the old default (currently: the Discord app).
+/// where they only held the old default (currently: the Discord app), and
+/// puts the current name in the first line.
 pub fn migrate() {
-    let Some(text) = read_text() else { return };
+    let Some(mut text) = read_text() else { return };
+    if let Some(rest) = text.strip_prefix("# Apple Music Discord Presence: advanced settings.") {
+        text = DEFAULT_FILE.lines().next().unwrap_or_default().to_string() + rest;
+        let tmp = path() + ".new";
+        let _ = sys::write_file(&tmp, text.as_bytes()) && sys::replace(&tmp, &path());
+    }
     if parse_into(Config::base(), &text).client_id == OLD_CLIENT_ID {
         set("client_id", &Config::default().client_id);
     }

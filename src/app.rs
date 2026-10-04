@@ -2,9 +2,11 @@
 //! shared UI state.
 //!
 //! Rules that keep the status honest:
-//! - Nothing is shown unless the player's session says so right now.
+//! - Nothing is shown unless the player's session says so right now (or did
+//!   GRACE_MS ago, so a blip between two songs doesn't blank the status).
 //! - The previous song is never kept up for more than HOLD_MS while the
-//!   player is between states; clearing is immediate and never rate-limited.
+//!   player is between states; clearing is never rate-limited, and turning
+//!   the status or a player off in the menu clears it at once.
 //! - If Discord refuses an update, the connection is dropped, which is
 //!   guaranteed to clear our activity.
 
@@ -20,13 +22,13 @@ use crate::sys::Lock;
 mod sim;
 use core::sync::atomic::{AtomicBool, AtomicIsize, Ordering::SeqCst};
 #[cfg(test)]
-use sim::{Lookup, Smtc, config, discord, discord::Discord, sys};
+use sim::{Art, Smtc, config, discord, discord::Discord, sys};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 #[cfg(not(test))]
 use {
     crate::discord::{self, Discord},
-    crate::itunes::Lookup,
+    crate::itunes::Art,
     crate::smtc::Smtc,
     crate::{config, sys},
 };
@@ -41,6 +43,13 @@ const SEEK_TOLERANCE_MS: i64 = 2500;
 const SETTLE_MS: i64 = 600;
 /// Longest a loading / half-updated state may keep the previous song up.
 const HOLD_MS: i64 = 5000;
+/// A song that stops (paused, player gone) stays up this long, so the status
+/// doesn't disappear and come back when the player blips between two songs.
+const GRACE_MS: i64 = 1500;
+/// How long a new song waits for its album art before going up without it
+/// (the previous song stays up meanwhile, and the player is still checked
+/// every SETTLE_MS), so a song change is usually one clean switch.
+const ART_WAIT_MS: i64 = 1500;
 /// Reconnect backoff (Discord limits new RPC connections per minute).
 const BACKOFF_MIN_MS: i64 = 5_000;
 const BACKOFF_MAX_MS: i64 = 120_000;
@@ -203,7 +212,7 @@ struct Worker {
     cfg_missing: bool,
     country: String,
     smtc: Smtc,
-    lookup: Lookup,
+    art: Art,
     dc: Option<Discord>,
     dc_error: String,
     retry_at: i64,
@@ -219,6 +228,10 @@ struct Worker {
     ident_since: i64,
     /// Last time the situation was definite (a song to show, or nothing).
     last_definite: i64,
+    /// The player of the song last shown.
+    showing: Option<Player>,
+    /// Since when the player has had nothing to show (see GRACE_MS).
+    stopped_since: Option<i64>,
     last_logged: String,
     playing_line: String,
 }
@@ -251,7 +264,7 @@ impl Worker {
             cfg_missing: false,
             cfg,
             smtc: Smtc::default(),
-            lookup: Lookup::new(),
+            art: Art::new(),
             dc: None,
             dc_error: String::new(),
             retry_at: 0,
@@ -263,6 +276,8 @@ impl Worker {
             ident: None,
             ident_since: 0,
             last_definite: sys::ticks(),
+            showing: None,
+            stopped_since: None,
             last_logged: String::new(),
             playing_line: String::new(),
         }
@@ -294,11 +309,7 @@ impl Worker {
             self.backoff = BACKOFF_MIN_MS;
         }
         self.cfg = c;
-        let cc = country(&self.cfg);
-        if cc != self.country {
-            self.lookup = Lookup::new(); // its artist cache is per store
-            self.country = cc;
-        }
+        self.country = country(&self.cfg);
         self.rejected = None;
         log(&self.cfg, "config reloaded");
     }
@@ -360,6 +371,7 @@ impl Worker {
                 None // fail closed: show nothing
             })
         } else {
+            self.smtc.forget(); // what it knew is stale by the time it looks again
             None
         };
 
@@ -370,7 +382,24 @@ impl Worker {
         }
         let settled = mono - self.ident_since >= SETTLE_MS;
 
+        // Stopped: paused (with show_paused off) or gone. The song stays up
+        // for GRACE_MS, unless the menu turned the status or its player off.
+        let stopped = match &track {
+            None => true,
+            Some(t) => t.state != State::Changing && presence::build(t, None, &self.cfg, now).is_none(),
+        };
+        let since = *self.stopped_since.get_or_insert(mono);
+        if !stopped {
+            self.stopped_since = None;
+        }
+        let in_grace = stopped
+            && enabled
+            && mono - since < GRACE_MS
+            && self.shown.is_some()
+            && self.showing.is_some_and(|p| players.contains(&p));
+
         let want = match track {
+            _ if in_grace => Want::Hold,
             None => Want::Clear,
             Some(t) if t.state == State::Changing => Want::Hold,
             // Paused with show_paused off, or every line templated away.
@@ -382,7 +411,9 @@ impl Worker {
         let mut sleep_ms = self.cfg.poll_ms;
         let mut hold_expired = false;
         let mut shown_track = None;
-        let holding = matches!(want, Want::Hold);
+        let mut holding = matches!(want, Want::Hold);
+        // Holding keeps what's up, unless the menu has turned its player off.
+        let kept = if self.showing.is_some_and(|p| players.contains(&p)) { self.shown.clone() } else { None };
         let desired = match want {
             Want::Clear => {
                 self.last_definite = mono;
@@ -391,30 +422,31 @@ impl Worker {
             Want::Hold => {
                 sleep_ms = sleep_ms.min(SETTLE_MS as u32);
                 hold_expired = mono - self.last_definite > HOLD_MS;
-                if hold_expired { None } else { self.shown.clone() }
+                if hold_expired { None } else { kept }
             }
             Want::Show(t) => {
                 // No point looking anything up for a song nobody will see.
                 self.ensure_connected(mono);
-                let mut act = None;
-                if self.dc.is_some() {
-                    let (size, lookup) = (self.cfg.artwork_size, wants_lookup(&self.cfg, t.player));
-                    if lookup && !self.lookup.cached(&t, &self.country, size) {
-                        // A lookup can take seconds: put the new song up
-                        // straight away (replacing the old one, without art
-                        // or links), then look it up. The next poll re-checks
-                        // the player and the toggle, and adds the art.
-                        let now_playing = presence::build(&t, None, &self.cfg, now);
-                        self.sync(now_playing, mono);
-                        self.lookup.find(&t, &self.country, size);
-                        return 0;
-                    }
-                    let meta = if lookup { self.lookup.find(&t, &self.country, size) } else { None };
-                    act = presence::build(&t, meta.as_ref(), &self.cfg, now);
+                let lookup = self.dc.is_some() && wants_lookup(&self.cfg, t.player);
+                let meta = if lookup { self.art.get(&t, &self.country, self.cfg.artwork_size) } else { Some(None) };
+                let waited = mono - self.ident_since >= SETTLE_MS + ART_WAIT_MS;
+                if meta.is_none() && !waited && mono - self.last_definite <= HOLD_MS {
+                    // Its art is on the way: the previous song stays up a
+                    // moment longer (within HOLD_MS), so the new one goes up
+                    // once, complete.
+                    holding = true;
+                    sleep_ms = sleep_ms.min(SETTLE_MS as u32);
+                    kept
+                } else {
+                    // (If the art is slow, the song goes up without it, and
+                    // the art follows when it arrives.)
+                    self.last_definite = mono;
+                    self.showing = Some(t.player);
+                    let act =
+                        self.dc.as_ref().and_then(|_| presence::build(&t, meta.flatten().as_ref(), &self.cfg, now));
+                    shown_track = Some(t);
+                    act
                 }
-                self.last_definite = mono;
-                shown_track = Some(t);
-                act
             }
         };
 

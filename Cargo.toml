@@ -1,11 +1,11 @@
 [package]
-name = "apple-music-discord-presence"
+name = "apple-music-spotify-presence"
 version = "1.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Show what you're playing in Apple Music on your Discord profile (Windows tray app)"
 license = "MIT"
-repository = "https://github.com/grayfvll01/apple-music-discord-presence"
+repository = "https://github.com/grayfvll01/apple-music-spotify-presence"
 readme = "README.md"
 keywords = ["discord", "rich-presence", "apple-music", "windows"]
 
@@ -14,7 +14,7 @@ doctest = false
 
 # Unit tests live in the library (they need `std`); the exe itself has none.
 [[bin]]
-name = "AppleMusicDiscordPresence"
+name = "AppleMusicSpotifyPresence"
 path = "src/main.rs"
 test = false
 

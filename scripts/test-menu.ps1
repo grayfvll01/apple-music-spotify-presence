@@ -7,10 +7,10 @@ Add-Type -Namespace W -Name U -MemberDefinition @'
 [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowW(string c, IntPtr n);
 [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
 '@
-$dir = Join-Path $env:APPDATA 'AppleMusicDiscordPresence'
+$dir = Join-Path $env:APPDATA 'AppleMusicSpotifyPresence'
 $log = Join-Path $dir 'log.txt'
 $cfg = Join-Path $dir 'config.ini'
-$h = [W.U]::FindWindowW("AppleMusicDiscordPresence", [IntPtr]::Zero)
+$h = [W.U]::FindWindowW("AppleMusicSpotifyPresence", [IntPtr]::Zero)
 if ($h -eq [IntPtr]::Zero) { throw 'app window not found' }
 
 function Sets { @(Get-Content $log | Where-Object { $_ -match '\] set: ' }) }

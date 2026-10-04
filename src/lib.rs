@@ -1,4 +1,4 @@
-//! Apple Music Discord Presence: Discord Rich Presence for Apple Music (and
+//! Apple Music & Spotify Presence: Discord Rich Presence for Apple Music (and
 //! Spotify) on Windows.
 //!
 //! Everything lives in this library so it can be unit-tested with `std`;
@@ -25,7 +25,7 @@ mod update;
 pub use tray::real_main;
 
 /// Shown in the tray, notifications and Windows.
-pub const APP_NAME: &str = "Apple Music Discord Presence";
+pub const APP_NAME: &str = "Apple Music & Spotify Presence";
 
 mod prelude {
     pub use alloc::format;

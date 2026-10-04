@@ -23,11 +23,11 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "FileDescription", "Apple Music Discord Presence"
-      VALUE "ProductName", "Apple Music Discord Presence"
+      VALUE "FileDescription", "Apple Music & Spotify Presence"
+      VALUE "ProductName", "Apple Music & Spotify Presence"
       VALUE "FileVersion", "{ver}"
       VALUE "ProductVersion", "{ver}"
-      VALUE "OriginalFilename", "AppleMusicDiscordPresence.exe"
+      VALUE "OriginalFilename", "AppleMusicSpotifyPresence.exe"
     END
   END
   BLOCK "VarFileInfo"

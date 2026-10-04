@@ -186,6 +186,12 @@ fn links_for(t: &Track, meta: Option<&Meta>) -> Option<Links> {
         Player::AppleMusic => {
             meta.map(|m| Links { track: m.track_url.clone(), artist: m.artist_url.clone(), album: m.album_url.clone() })
         }
+        // Episodes: the episode, and its show.
+        Player::Spotify if t.episode => Some(Links {
+            track: spotify_search(&format!("{} {}", t.title, t.artist), "episodes"),
+            artist: spotify_search(&t.artist, "podcasts"),
+            album: String::new(),
+        }),
         Player::Spotify => {
             let artist = crate::itunes::main_artist(&t.artist);
             let album = album_display(&t.album);
@@ -325,6 +331,7 @@ mod tests {
             title: "GIMME A HUG".into(),
             artist: "Drake".into(),
             album: "$ome $exy $ongs 4 U".into(),
+            episode: false,
             state,
             duration_ms: 193_000,
             position_ms: 59_000,
@@ -411,6 +418,7 @@ mod tests {
             title: "Nena Maldici\u{f3}n (feat. Lenny Tav\u{e1}rez)".into(),
             artist: "Paulo Londra".into(),
             album: "Nena Maldici\u{f3}n (feat. Lenny Tav\u{e1}rez) - Single".into(),
+            episode: false,
             state: State::Playing,
             duration_ms: 228_000,
             position_ms: 0,
@@ -451,6 +459,7 @@ mod tests {
             title: "Tal Vez".into(),
             artist: "Paulo Londra".into(),
             album: "Homerun".into(),
+            episode: false,
             state: State::Playing,
             duration_ms: 263_000,
             position_ms: 51_000,
@@ -494,6 +503,37 @@ mod tests {
         let c3 = Config { links: false, ..Config::default() };
         let json = build(&t, None, &c3, 0).unwrap().json();
         assert!(!json.contains("_url"), "{json}");
+    }
+
+    /// A podcast episode: the episode, then its show; links to Spotify's
+    /// episode and podcast searches; no album line.
+    #[test]
+    fn spotify_episode() {
+        let t = Track {
+            player: Player::Spotify,
+            title: "La \u{da}ltima vez-Anuel x Bad Bunny".into(),
+            artist: "Anuel AA".into(),
+            album: String::new(),
+            episode: true,
+            state: State::Playing,
+            duration_ms: 300_000,
+            position_ms: 34_000,
+        };
+        let v = json::parse(&build(&t, None, &Config::default(), 0).unwrap().json()).unwrap();
+        assert_eq!(v.str("details"), Some("La \u{da}ltima vez-Anuel x Bad Bunny"));
+        assert_eq!(v.str("state"), Some("Anuel AA"));
+        assert_eq!(
+            v.str("details_url"),
+            Some(
+                "https://open.spotify.com/search/La%20%C3%9Altima%20vez-Anuel%20x%20Bad%20Bunny%20Anuel%20AA/episodes"
+            )
+        );
+        assert_eq!(v.str("state_url"), Some("https://open.spotify.com/search/Anuel%20AA/podcasts"));
+        let assets = v.get("assets").unwrap();
+        assert!(assets.str("large_text").is_none() && assets.str("large_url").is_none());
+        let c = Config { status_display: crate::config::SONG_ARTIST, ..Config::default() };
+        let v = json::parse(&build(&t, None, &c, 0).unwrap().json()).unwrap();
+        assert_eq!(v.str("details"), Some("La \u{da}ltima vez-Anuel x Bad Bunny \u{2014} Anuel AA"));
     }
 
     #[test]

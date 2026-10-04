@@ -10,9 +10,9 @@ use crate::sys::{self, Lock};
 use crate::{config, tray};
 use core::sync::atomic::{AtomicBool, AtomicIsize, Ordering::SeqCst};
 
-pub const REPO: &str = "grayfvll01/apple-music-discord-presence";
-pub const PAGE: &str = "https://github.com/grayfvll01/apple-music-discord-presence";
-const SETUP: &str = "AppleMusicDiscordPresence-Setup.exe";
+pub const REPO: &str = "grayfvll01/apple-music-spotify-presence";
+pub const PAGE: &str = "https://github.com/grayfvll01/apple-music-spotify-presence";
+const SETUP: &str = "AppleMusicSpotifyPresence-Setup.exe";
 const FIRST_CHECK_MS: u32 = 20_000;
 const CHECK_EVERY_MS: u32 = 12 * 3600 * 1000;
 
@@ -188,7 +188,7 @@ mod tests {
         let dl = format!("https://github.com/{REPO}/releases/download/v9.0.0");
         let v = json::parse(&format!(
             r#"{{"tag_name":"v9.0.0","assets":[
-                {{"name":"AppleMusicDiscordPresence.exe","browser_download_url":"{dl}/AppleMusicDiscordPresence.exe"}},
+                {{"name":"AppleMusicSpotifyPresence.exe","browser_download_url":"{dl}/AppleMusicSpotifyPresence.exe"}},
                 {{"name":"{SETUP}","browser_download_url":"{dl}/{SETUP}"}},
                 {{"name":"{SETUP}.sha256","browser_download_url":"{dl}/{SETUP}.sha256"}}]}}"#
         ))

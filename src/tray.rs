@@ -15,7 +15,7 @@ use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{HSTRING, PCSTR, PCWSTR, w};
 
-const CLASS: PCWSTR = w!("AppleMusicDiscordPresence");
+const CLASS: PCWSTR = w!("AppleMusicSpotifyPresence");
 const WM_TRAY: u32 = WM_APP + 1;
 /// Sent by a second copy of the app: point the user at this one.
 const WM_HELLO: u32 = WM_APP + 3;
@@ -85,13 +85,18 @@ pub fn real_main() -> u32 {
         // One instance only; launching again points at the running one. The
         // mutex handle is intentionally kept open for the process lifetime.
         let _mutex =
-            windows::Win32::System::Threading::CreateMutexW(None, true, w!("Local\\AppleMusicDiscordPresence"));
+            windows::Win32::System::Threading::CreateMutexW(None, true, w!("Local\\AppleMusicSpotifyPresence"));
         // ACCESS_DENIED: another copy is running elevated.
         if matches!(GetLastError(), ERROR_ALREADY_EXISTS | ERROR_ACCESS_DENIED) {
             if let Ok(h) = FindWindowW(CLASS, PCWSTR::null()) {
                 let _ = PostMessageW(Some(h), WM_HELLO, WPARAM(0), LPARAM(0));
             }
             return 0;
+        }
+        // A copy from before the rename (1.1.x) would show the song twice:
+        // ask it to quit (it clears its status on the way out).
+        if let Ok(old) = FindWindowW(w!("AppleMusicDiscordPresence"), PCWSTR::null()) {
+            let _ = PostMessageW(Some(old), WM_CLOSE, WPARAM(0), LPARAM(0));
         }
         run_tray();
     }
@@ -442,7 +447,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     }
 }
 
-/// `AppleMusicDiscordPresence --dump [--send]`: prints what would be sent (debug aid).
+/// `AppleMusicSpotifyPresence --dump [--send]`: prints what would be sent (debug aid).
 #[cfg_attr(test, allow(dead_code))]
 fn dump(send: bool) {
     unsafe {
@@ -483,7 +488,7 @@ fn dump(send: bool) {
         track.duration_ms / 1000
     ));
     let meta = app::wants_lookup(&cfg, track.player)
-        .then(|| itunes::Lookup::new().find(&track, &app::country(&cfg), cfg.artwork_size))
+        .then(|| itunes::Lookup::new().find(&track, &app::country(&cfg), cfg.artwork_size).ok().flatten())
         .flatten();
     match &meta {
         Some(m) => out(format!(

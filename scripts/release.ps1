@@ -38,4 +38,4 @@ git commit -m "Release $Version"
 git tag -a "v$Version" -m "v$Version"
 git push origin main "v$Version"
 if ($LASTEXITCODE) { throw "Push failed." }
-"v$Version pushed. The release appears at https://github.com/grayfvll01/apple-music-discord-presence/releases in a few minutes."
+"v$Version pushed. The release appears at https://github.com/grayfvll01/apple-music-spotify-presence/releases in a few minutes."

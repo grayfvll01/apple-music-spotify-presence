@@ -24,7 +24,7 @@ pub struct Client {
 
 impl Client {
     pub fn new() -> Option<Self> {
-        let ua = wide(concat!("AppleMusicDiscordPresence/", env!("CARGO_PKG_VERSION")));
+        let ua = wide(concat!("AppleMusicSpotifyPresence/", env!("CARGO_PKG_VERSION")));
         let h = unsafe {
             WinHttpOpen(PCWSTR(ua.as_ptr()), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, PCWSTR::null(), PCWSTR::null(), 0)
         };

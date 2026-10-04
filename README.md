@@ -1,10 +1,10 @@
 <p align="center"><img src="assets/logo.png" width="88" alt=""></p>
 
-<h1 align="center">Apple Music Discord Presence</h1>
+<h1 align="center">Apple Music &amp; Spotify Presence</h1>
 
 <p align="center">Show what you're playing in Apple Music or Spotify on your Discord profile.</p>
 
-<p align="center"><a href="https://github.com/grayfvll01/apple-music-discord-presence/releases/latest/download/AppleMusicDiscordPresence-Setup.exe"><b>Download for Windows</b></a></p>
+<p align="center"><a href="https://github.com/grayfvll01/apple-music-spotify-presence/releases/latest/download/AppleMusicSpotifyPresence-Setup.exe"><b>Download for Windows</b></a></p>
 
 ---
 
@@ -14,7 +14,7 @@
 
 ## Install
 
-Run `AppleMusicDiscordPresence-Setup.exe`. It adds the app to the Start menu, and doesn't need admin rights.
+Run `AppleMusicSpotifyPresence-Setup.exe`. It adds the app to the Start menu, and doesn't need admin rights.
 
 It needs Windows 10 or 11, the Discord desktop app, and [Apple Music](https://apps.microsoft.com/detail/9pfhdd62mxs1) from the Microsoft Store or the [Spotify](https://www.spotify.com/download/windows/) app.
 
@@ -32,7 +32,7 @@ If your Spotify account is connected to Discord, turn off **Display Spotify as y
 
 ## Advanced
 
-**More → Advanced settings file** opens `%APPDATA%\AppleMusicDiscordPresence\config.ini`, where every option is explained. Running `AppleMusicDiscordPresence.exe --dump` prints exactly what would be sent to Discord.
+**More → Advanced settings file** opens `%APPDATA%\AppleMusicSpotifyPresence\config.ini`, where every option is explained. Running `AppleMusicSpotifyPresence.exe --dump` prints exactly what would be sent to Discord.
 
 ## Development
 

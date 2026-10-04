@@ -52,7 +52,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory dist | Out-Null
-          Copy-Item target/release/AppleMusicDiscordPresence.exe, target/installer/AppleMusicDiscordPresence-Setup.exe dist/
+          Copy-Item target/release/AppleMusicSpotifyPresence.exe, target/installer/AppleMusicSpotifyPresence-Setup.exe dist/
           Get-ChildItem dist/*.exe | ForEach-Object {
             $h = (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower()
             "$h  $($_.Name)" | Set-Content -NoNewline "$($_.FullName).sha256"
@@ -61,7 +61,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: apple-music-discord-presence
+          name: apple-music-spotify-presence
           path: dist/*
 
       - name: Release
@@ -70,6 +70,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $install = "**Download** ``AppleMusicDiscordPresence-Setup.exe`` and run it, or use the portable ``AppleMusicDiscordPresence.exe``. Installed copies update themselves."
+          $install = "**Download** ``AppleMusicSpotifyPresence-Setup.exe`` and run it, or use the portable ``AppleMusicSpotifyPresence.exe``. Installed copies update themselves."
           $notes = (Get-Content release-notes.md -Raw).Trim() + "`n`n" + $install
           gh release create $env:GITHUB_REF_NAME (Get-ChildItem dist/*) --title "$env:GITHUB_REF_NAME" --notes $notes

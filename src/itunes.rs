@@ -5,6 +5,8 @@ use crate::http::{self, Client};
 use crate::json::{self, Json};
 use crate::prelude::*;
 use crate::smtc::Track;
+use crate::sys::{self, Lock};
+use core::sync::atomic::{AtomicBool, Ordering::SeqCst};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Meta {
@@ -13,16 +15,6 @@ pub struct Meta {
     pub artist_url: String,
     pub album_url: String,
     pub track_id: u64,
-}
-
-pub struct Lookup {
-    http: Option<Client>,
-    /// (key, result, retry-after). A short list: a HashMap would add hashing
-    /// code for no real gain at this size.
-    cache: Vec<(String, Option<Meta>, i64)>,
-    /// The last artist's song list (artist, response): the next track by the
-    /// same artist costs no extra requests.
-    artist_songs: Option<(String, Json)>,
 }
 
 const MISS_RETRY_MS: i64 = 10 * 60 * 1000;
@@ -54,43 +46,101 @@ fn key(t: &Track, country: &str, size: u32) -> String {
     format!("{}\0{}\0{}\0{}\0{}\0{}", t.title, t.artist, t.album, t.duration_ms / 1000, country, size)
 }
 
+/// Album-art lookups, done on a thread of their own: a slow or unreachable
+/// iTunes never holds the worker up. It asks, carries on, and is woken when
+/// the answer is in.
+pub struct Art;
+
+struct ArtState {
+    /// (key, result, retry after). A short list: a HashMap would add hashing
+    /// code for no real gain at this size.
+    cache: Vec<(String, Option<Meta>, i64)>,
+    /// The lookup to do next (the latest request wins), and the one running.
+    next: Option<(String, Track, String, u32)>,
+    running: String,
+    wake: isize,
+}
+
+static ART: Lock<ArtState> = Lock::new(ArtState { cache: Vec::new(), next: None, running: String::new(), wake: 0 });
+static STARTED: AtomicBool = AtomicBool::new(false);
+
+impl Art {
+    pub fn new() -> Self {
+        if !STARTED.swap(true, SeqCst) {
+            ART.with(|a| a.wake = sys::event_new());
+            sys::spawn(art_thread);
+        }
+        Art
+    }
+
+    /// The lookup's result for `t`, or `None` while it's being looked up
+    /// (asked for here; the worker is woken when it's done).
+    pub fn get(&mut self, t: &Track, country: &str, size: u32) -> Option<Option<Meta>> {
+        let key = key(t, country, size);
+        let now = sys::ticks();
+        ART.with(|a| {
+            if let Some((_, m, until)) = a.cache.iter().find(|(k, ..)| *k == key)
+                && (m.is_some() || now < *until)
+            {
+                return Some(m.clone());
+            }
+            if a.running != key && a.next.as_ref().is_none_or(|n| n.0 != key) {
+                a.next = Some((key, t.clone(), country.to_string(), size));
+                sys::event_set(a.wake);
+            }
+            None
+        })
+    }
+}
+
+fn art_thread() {
+    let mut lookup = Lookup::new();
+    let wake = ART.with(|a| a.wake);
+    loop {
+        sys::event_wait(wake, u32::MAX);
+        while let Some((key, t, country, size)) = ART.with(|a| {
+            let next = a.next.take();
+            a.running = next.as_ref().map(|n| n.0.clone()).unwrap_or_default();
+            next
+        }) {
+            let (meta, retry) = match lookup.find(&t, &country, size) {
+                Ok(m) => (m, MISS_RETRY_MS),
+                Err(()) => (None, FAIL_RETRY_MS),
+            };
+            ART.with(|a| {
+                a.running.clear();
+                a.cache.retain(|(k, ..)| *k != key);
+                if a.cache.len() >= 64 {
+                    a.cache.remove(0);
+                }
+                // Counted from now, not from the start: a slow failure
+                // mustn't expire before it's even been stored.
+                a.cache.push((key, meta, sys::ticks() + retry));
+            });
+            crate::app::SHARED.wake();
+        }
+    }
+}
+
+/// The lookup itself (blocking, network).
+pub struct Lookup {
+    http: Option<Client>,
+    /// The last artist's song list (artist and store, response): the next
+    /// track by the same artist costs no extra requests.
+    artist_songs: Option<(String, Json)>,
+}
+
 impl Lookup {
     pub fn new() -> Self {
-        Lookup { http: None, cache: Vec::new(), artist_songs: None }
+        Lookup { http: None, artist_songs: None }
     }
 
-    fn hit(&self, key: &str) -> Option<Option<Meta>> {
-        let (_, m, until) = self.cache.iter().find(|(k, ..)| *k == key)?;
-        (m.is_some() || crate::sys::ticks() < *until).then(|| m.clone())
-    }
-
-    /// True if `find` would answer without going to the network.
-    pub fn cached(&self, t: &Track, country: &str, size: u32) -> bool {
-        self.hit(&key(t, country, size)).is_some()
-    }
-
-    /// The match for `t`. Every call leaves a cache entry (a failure is
-    /// retried after FAIL_RETRY_MS), so `cached` is true afterwards.
-    pub fn find(&mut self, t: &Track, country: &str, size: u32) -> Option<Meta> {
-        let key = key(t, country, size);
-        if let Some(m) = self.hit(&key) {
-            return m;
-        }
+    /// The match for `t`; `Err` if it failed in a way worth retrying soon.
+    pub fn find(&mut self, t: &Track, country: &str, size: u32) -> Result<Option<Meta>, ()> {
         if self.http.is_none() {
             self.http = Client::new();
         }
-        let (meta, retry) = match self.search(t, country, size) {
-            Ok(m) => (m, MISS_RETRY_MS),
-            Err(Transient) => (None, FAIL_RETRY_MS),
-        };
-        self.cache.retain(|(k, ..)| *k != key);
-        if self.cache.len() >= 64 {
-            self.cache.remove(0);
-        }
-        // Counted from now, not from the start: a slow failure mustn't expire
-        // before it's even been stored.
-        self.cache.push((key, meta.clone(), crate::sys::ticks() + retry));
-        meta
+        self.search(t, country, size).map_err(|Transient| ())
     }
 
     /// Tries, in order: a plain search; the album's own track list (search
@@ -98,7 +148,7 @@ impl Lookup {
     /// exact match, else uses the best weaker one.
     fn search(&mut self, t: &Track, country: &str, size: u32) -> Result<Option<Meta>, Transient> {
         let Some(http) = self.http.as_ref() else { return Err(Transient) };
-        let deadline = crate::sys::ticks() + LOOKUP_BUDGET_MS;
+        let deadline = sys::ticks() + LOOKUP_BUDGET_MS;
         let get = |path: &str| fetch(http, path, deadline);
         let q = |term: &str, entity: &str, limit: u32| {
             format!("/search?term={}&media=music&entity={entity}&limit={limit}&country={country}", http::encode(term))
@@ -127,8 +177,9 @@ impl Lookup {
         }
 
         let main = main_artist(&t.artist);
+        let artist_key = format!("{}\0{country}", t.artist);
         if !main.is_empty() {
-            if self.artist_songs.as_ref().is_none_or(|(a, _)| *a != t.artist) {
+            if self.artist_songs.as_ref().is_none_or(|(a, _)| *a != artist_key) {
                 // Collaborations are filed under the main artist ("ROA &
                 // CDobleta" -> ROA); bands keep the full name ("Chase &
                 // Status"), which may need its own search.
@@ -152,7 +203,7 @@ impl Lookup {
                 } else {
                     get(&format!("/lookup?id={list}&entity=song&limit=200&country={country}"))?
                 };
-                self.artist_songs = Some((t.artist.clone(), songs));
+                self.artist_songs = Some((artist_key, songs));
             }
             if let Some((_, songs)) = &self.artist_songs {
                 match best(songs, t, size, false) {
@@ -371,6 +422,7 @@ mod tests {
             title: title.into(),
             artist: artist.into(),
             album: album.into(),
+            episode: false,
             state: State::Playing,
             duration_ms: 0,
             position_ms: 0,
@@ -436,19 +488,18 @@ mod tests {
         ] {
             let mut t = track(title, artist, album);
             t.duration_ms = secs * 1000;
-            let m = l.find(&t, "us", 512).unwrap_or_else(|| panic!("no match for {title}"));
+            let m = l.find(&t, "us", 512).ok().flatten().unwrap_or_else(|| panic!("no match for {title}"));
             assert!(m.artwork.starts_with("https://") && m.artwork.ends_with("/512x512bb.jpg"), "{title}");
             assert!(m.track_url.starts_with("https://music.apple.com/song/"), "{title}: {}", m.track_url);
             assert!(m.track_id > 0, "{title}");
         }
         // Territories without a store answer 400: that's "no match", not an error.
         let pr = track("GIMME A HUG", "Drake", "");
-        assert_eq!(l.find(&pr, "pr", 512), None);
-        assert!(l.cached(&pr, "pr", 512));
+        assert_eq!(l.find(&pr, "pr", 512), Ok(None));
         // A band with "&" in its name, and the right version of the song.
         let mut t = track("Blind Faith (feat. Liam Bailey)", "Chase & Status", "No More Idols");
         t.duration_ms = 233_000;
-        let m = l.find(&t, "us", 512).expect("Chase & Status");
+        let m = l.find(&t, "us", 512).ok().flatten().expect("Chase & Status");
         assert!(m.track_id > 0 && m.album_url.starts_with("https://music.apple.com/album/"));
     }
 

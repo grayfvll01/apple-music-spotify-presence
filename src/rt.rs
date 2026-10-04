@@ -7,7 +7,7 @@ use core::arch::asm;
 /// Process entry point (`/ENTRY:rawentry`, see build.rs).
 #[unsafe(no_mangle)]
 extern "system" fn rawentry() -> ! {
-    let code = apple_music_discord_presence::real_main();
+    let code = apple_music_spotify_presence::real_main();
     unsafe { windows::Win32::System::Threading::ExitProcess(code) }
 }
 
